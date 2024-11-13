@@ -1,4 +1,4 @@
-from typing import BinaryIO
+from typing import BinaryIO, Optional
 from logging import getLogger
 import atexit
 import pickle
@@ -29,6 +29,7 @@ class WriteAheadLog:
         :param log_file: The path to the log file.
         """
         self.log_file = log_file
+        self._log_fd: Optional[BinaryIO] = None
         atexit.register(self.close)
 
     def init(self):
@@ -58,16 +59,22 @@ class WriteAheadLog:
             self._log_fd.flush()
             self._log_fd.close()
     
+    def tell(self):
+        """
+        Return the current position of the log file.
+        """
+        return self._log_fd.tell()
+    
     def rotate(self):
         """
         Rotate the log file.
         """
-        if self._log_fd and not self._log_fd.closed:
-            raise ValueError('The log file is still open.')
+        self.close()
         tmp_file = self.log_file + '.tmp'
         with open(tmp_file, 'wb') as f:
             wal_dump(f, self._staged_records)
         os.rename(tmp_file, self.log_file)
+        self.open()
         
     def stage(self, data):
         """
@@ -79,7 +86,6 @@ class WriteAheadLog:
         b_data = pickle.dumps(data)
         i = self._max_index + 1
         self._staged_records[i] = b_data
-
         b_record = i.to_bytes(4, signed=True) + len(b_data).to_bytes(4, signed=False) + b_data
         self._log_fd.write(b_record)
         self._log_fd.flush()
@@ -99,6 +105,13 @@ class WriteAheadLog:
         b_record = (-i).to_bytes(4, signed=True)
         self._log_fd.write(b_record)
         self._log_fd.flush()
+    
+    def iter_records(self):
+        """
+        Iterate over the staged records.
+        """
+        for i, data in self._staged_records.items():
+            yield i, pickle.loads(data)
             
 
 def wal_load(f: BinaryIO, validate=False):
