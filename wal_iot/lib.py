@@ -1,5 +1,10 @@
+from typing import BinaryIO
+from logging import getLogger
 import atexit
+import pickle
 import os
+
+logger = getLogger(__name__)
 
 class WriteAheadLog:
     """
@@ -19,38 +24,113 @@ class WriteAheadLog:
 
     def __init__(self, log_file: str):
         """
-        Initialize the WriteAheadLog object.
+        Create a WriteAheadLog object.
 
         :param log_file: The path to the log file.
         """
         self.log_file = log_file
-        self._fd = open(log_file, 'w+b')
-        atexit.register(self._fd.close)
-        self._uncommitted_records = {}
+        atexit.register(self.close)
 
+    def init(self):
+        """
+        Initialize the WriteAheadLog object.
+        """
+        if not os.path.exists(self.log_file):
+            with open(self.log_file, 'wb') as f:
+                pass
+        with open(self.log_file, 'rb') as f:
+            self._staged_records, self._max_index = wal_load(f, validate=True)
+        self.rotate()
+        self._log_fd = open(self.log_file, 'ab', buffering=0)
+    
+    def open(self):
+        """
+        Open the log file.
+        """
+        if self._log_fd and self._log_fd.closed:
+            self._log_fd = open(self.log_file, 'ab', buffering=0)
+    
+    def close(self):
+        """
+        Close the log file.
+        """
+        if self._log_fd and not self._log_fd.closed:
+            self._log_fd.flush()
+            self._log_fd.close()
+    
+    def rotate(self):
+        """
+        Rotate the log file.
+        """
+        if self._log_fd and not self._log_fd.closed:
+            raise ValueError('The log file is still open.')
+        tmp_file = self.log_file + '.tmp'
+        with open(tmp_file, 'wb') as f:
+            wal_dump(f, self._staged_records)
+        os.rename(tmp_file, self.log_file)
         
-    def compress(self):
+    def stage(self, data):
         """
-        Compress the log file by removing the committed records.
+        Stage the given data to the log.
+
+        :param data: The data to be staged.
+        :return: The index of the staged record.
         """
-        self._fd.seek(0)
-        while True:
-            b_i = self._fd.read(4)
-            if not b_i :
-                break
-            i = int.from_bytes(b_i, signed=True)
-            if i > 0:
-                b_len = self._fd.read(4)
-                l = int.from_bytes(b_len)
-                b_data = self._fd.read(l)
+        b_data = pickle.dumps(data)
+        i = self._max_index + 1
+        self._staged_records[i] = b_data
 
+        b_record = i.to_bytes(4, signed=True) + len(b_data).to_bytes(4, signed=False) + b_data
+        self._log_fd.write(b_record)
+        self._log_fd.flush()
+        self._max_index = i
+        return i
+    
+    def commit(self, i):
+        """
+        Commit the record with the given index.
 
-
-
-                
+        :param i: The index of the record to be committed.
+        """
+        if i not in self._staged_records:
+            logger.warning(f'The record with index {i} does not exist.')
+            return
+        del self._staged_records[i]
+        b_record = (-i).to_bytes(4, signed=True)
+        self._log_fd.write(b_record)
+        self._log_fd.flush()
             
-            
-                
-                
 
-            
+def wal_load(f: BinaryIO, validate=False):
+    """
+    Load data from the given file object and return the parsed data.
+    """
+    records = {}
+    max_index = 0
+    while True:
+        b_i = f.read(4)
+        if not b_i:
+            break
+        i = int.from_bytes(b_i, signed=True)
+        if i > 0:
+            b_l = f.read(4)
+            l = int.from_bytes(b_l, signed=False)
+            b_data = f.read(l)
+            if validate:
+                pickle.loads(b_data)
+            records[i] = b_data
+            max_index = i if i > max_index else max_index
+        else:
+            del records[-i] 
+    return records, max_index
+
+
+def wal_dump(f: BinaryIO, records: dict):
+    """
+    Dump the given records to the file object.
+    """
+    for i, data in records.items():
+        f.write(i.to_bytes(4, signed=True))
+        f.write(len(data).to_bytes(4, signed=False))
+        f.write(data)
+        f.flush()
