@@ -41,7 +41,7 @@ class WriteAheadLog:
                 pass
         with open(self.log_file, 'rb') as f:
             self._staged_records, self._max_index = wal_load(f, validate=True)
-        self.rotate()
+        self.compress()
         self._log_fd = open(self.log_file, 'ab', buffering=0)
     
     def open(self):
@@ -65,9 +65,9 @@ class WriteAheadLog:
         """
         return self._log_fd.tell()
     
-    def rotate(self):
+    def compress(self):
         """
-        Rotate the log file.
+        Compress the log file by removing the committed records.
         """
         self.close()
         tmp_file = self.log_file + '.tmp'
